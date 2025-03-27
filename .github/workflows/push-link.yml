@@ -1,0 +1,81 @@
+name: Push Link to DingTalk
+on:
+  workflow_dispatch:  # 支持手动触发
+    inputs:
+      link:
+        description: '输入你要推送的链接'
+        required: true
+
+jobs:
+  process-link:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install Dependencies
+        run: |
+          pip install requests playwright beautifulsoup4
+          playwright install chromium
+
+      - name: Run Script
+        env:
+          DINGTALK_WEBHOOK: ${{ secrets.DINGTALK_WEBHOOK }}
+          INPUT_LINK: ${{ github.event.inputs.link }}  # 获取手动输入的链接
+        run: |
+          python3 - <<EOF
+          import os
+          import requests
+          from bs4 import BeautifulSoup
+          from playwright.sync_api import sync_playwright
+
+          def extract_info(url):
+              # 提取标题
+              response = requests.get(url)
+              soup = BeautifulSoup(response.text, 'html.parser')
+              title = soup.title.string.strip() if soup.title else "无标题"
+              
+              # 生成截图
+              screenshot_path = "screenshots/screenshot.png"
+              with sync_playwright() as p:
+                  browser = p.chromium.launch()
+                  page = browser.new_page()
+                  page.goto(url)
+                  page.screenshot(path=screenshot_path, full_page=True)
+                  browser.close()
+              
+              # 生成GitHub公开访问的图片链接
+              repo_url = f"https://raw.githubusercontent.com/{os.getenv('GITHUB_REPOSITORY')}/main/{screenshot_path}"
+              return {
+                  "url": url,
+                  "title": title,
+                  "screenshot": repo_url
+              }
+
+          def send_to_dingtalk(info):
+              message = {
+                  "msgtype": "markdown",
+                  "markdown": {
+                      "title": "链接推送",
+                      "text": f"**标题**: {info['title']}\n\n**链接**: [{info['url']}]({info['url']})\n\n![截图]({info['screenshot']})"
+                  }
+              }
+              requests.post(os.getenv("DINGTALK_WEBHOOK"), json=message)
+
+          # 主逻辑
+          info = extract_info(os.getenv("INPUT_LINK"))
+          send_to_dingtalk(info)
+          EOF
+
+      - name: Upload Screenshot
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add screenshots/
+          git commit -m "Add screenshot for ${{ github.event.inputs.link }}" || echo "No changes"
+          git push
